@@ -1,98 +1,69 @@
 import json
-from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import streamlit as st
 import tensorflow as tf
 from PIL import Image
 
-st.set_page_config(page_title="Skin Disease Classifier", page_icon="🔬", layout="centered")
+IMG_SIZE = (64, 64)
 
-MODEL_PATH = Path("skin.keras")
-CLASSES_PATH = Path("classes.json")
-IMAGE_SIZE = (64, 64)
+st.set_page_config(page_title="Skin Disease Classifier", page_icon="🩺")
+st.title("Skin Disease Classifier")
+st.caption("Upload an image and the CNN will predict the most likely class.")
 
 
 @st.cache_resource
-def load_model_and_classes():
-    if not MODEL_PATH.exists():
-        raise FileNotFoundError(
-            "skin.keras was not found. Train the model first using train_model.py."
-        )
-    if not CLASSES_PATH.exists():
-        raise FileNotFoundError(
-            "classes.json was not found. Train the model first using train_model.py."
-        )
-
-    model = tf.keras.models.load_model(MODEL_PATH)
-    with CLASSES_PATH.open("r", encoding="utf-8") as file:
-        class_names = json.load(file)
+def load_model_and_classes(model_path="skin.keras", classes_path="classes.json"):
+    model = tf.keras.models.load_model(model_path)
+    with open(classes_path, "r") as f:
+        class_names = json.load(f)
     return model, class_names
 
 
-def predict_image(image: Image.Image, model, class_names):
-    image = image.convert("RGB").resize(IMAGE_SIZE)
-    image_array = tf.keras.utils.img_to_array(image)
-    image_array = tf.expand_dims(image_array, axis=0)
-
-    probabilities = model.predict(image_array, verbose=0)[0]
-    predicted_index = int(np.argmax(probabilities))
-
-    if predicted_index >= len(class_names):
-        raise ValueError("The model output does not match classes.json.")
-
-    return class_names[predicted_index], float(probabilities[predicted_index]), probabilities
-
-
-st.title("🔬 Skin Disease Image Classifier")
-st.write(
-    "Upload a skin image to see the class predicted by the CNN model "
-    "trained from your dataset."
-)
-
-st.warning(
-    "Educational project only: this model is not a medical diagnosis. "
-    "It may make incorrect predictions. Consult a qualified dermatologist "
-    "for symptoms, diagnosis, or treatment."
-)
-
 try:
     model, class_names = load_model_and_classes()
-except Exception as error:
-    st.error(str(error))
-    st.info(
-        "Keep skin.keras and classes.json in the same folder as app.py. "
-        "If you have not trained the model yet, run train_model.py first."
+except Exception as e:
+    st.error(
+        "Could not load `skin.keras` / `classes.json`. "
+        "Run `python train.py` first and keep both files next to this app.\n\n"
+        f"Details: {e}"
     )
     st.stop()
 
-uploaded_file = st.file_uploader(
-    "Choose a skin image", type=["jpg", "jpeg", "png", "bmp", "webp"]
-)
 
-if uploaded_file is not None:
-    try:
-        image = Image.open(uploaded_file).convert("RGB")
-        st.image(image, caption="Uploaded image", use_container_width=True)
+def predict(img: Image.Image) -> np.ndarray:
+    img = img.convert("RGB").resize(IMG_SIZE, Image.BILINEAR)
+    x = tf.keras.utils.img_to_array(img)  # same preprocessing as the notebook
+    x = tf.expand_dims(x, 0)              # Rescaling(1/255) is inside the model
+    return model.predict(x, verbose=0)[0]
 
-        if st.button("Classify image", type="primary"):
-            with st.spinner("Analyzing image..."):
-                predicted_class, confidence, probabilities = predict_image(
-                    image, model, class_names
-                )
 
-            st.subheader("Prediction")
-            st.success(f"Predicted class: **{predicted_class}**")
-            st.metric("Model confidence", f"{confidence * 100:.2f}%")
+uploaded = st.file_uploader("Choose an image", type=["jpg", "jpeg", "png"])
 
-            st.subheader("Class probabilities")
-            probability_data = {
-                class_names[i]: float(probabilities[i])
-                for i in range(min(len(class_names), len(probabilities)))
-            }
-            probability_data = dict(
-                sorted(probability_data.items(), key=lambda item: item[1], reverse=True)
-            )
-            st.bar_chart(probability_data)
-    except Exception as error:
-        st.error(f"Could not process this image: {error}")
+if uploaded is not None:
+    image = Image.open(uploaded)
+    st.image(image, caption="Uploaded image", use_container_width=True)
+
+    with st.spinner("Predicting..."):
+        probs = predict(image)
+
+    top = int(probs.argmax())
+    st.success(f"Prediction: **{class_names[top]}** ({probs[top]:.1%})")
+
+    st.subheader("Top 5 classes")
+    top5 = probs.argsort()[::-1][:5]
+    df = pd.DataFrame(
+        {"Class": [class_names[i] for i in top5], "Probability": probs[top5]}
+    ).set_index("Class")
+    st.bar_chart(df)
+
+    with st.expander("All probabilities"):
+        st.dataframe(
+            pd.DataFrame({"Class": class_names, "Probability": probs}).sort_values(
+                "Probability", ascending=False
+            ),
+            hide_index=True,
+        )
+
+st.info("For learning/demo purposes only — not a medical diagnosis.")
